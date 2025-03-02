@@ -1,0 +1,113 @@
+
+// Define the point of interest
+var point = ee.Geometry.Point([50, 36]);
+
+// Load ERA5 data (instead of MODIS) for surface temperature
+var dataset = ee.ImageCollection("ECMWF/ERA5/DAILY")
+  .filterBounds(point)
+  .filterDate('1980-06-23', '1999-06-23')  
+  .select(['mean_2m_air_temperature', 'minimum_2m_air_temperature', 'maximum_2m_air_temperature']);
+
+// Function to convert temperature from Kelvin to Celsius and calculate average
+var kelvinToCelsiusAndAverage = function(image) {
+  var meanTemp = image.select('mean_2m_air_temperature').subtract(273.15);       // Already in Kelvin
+  var minTemp = image.select('minimum_2m_air_temperature').subtract(273.15);     // Minimum temp
+  var maxTemp = image.select('maximum_2m_air_temperature').subtract(273.15);     // Maximum temp
+  // Calculate average of min and max temperatures as a proxy for day/night
+  var avgTemp = minTemp.add(maxTemp).divide(2)
+    .rename('AVG_Temp');
+  return avgTemp.copyProperties(image, ['system:time_start']);
+};
+
+// Apply temperature conversion and averaging
+var tempCollection = dataset.map(kelvinToCelsiusAndAverage);
+
+// Calculate monthly averages for specified years
+var years = ee.List.sequence(1970, 2019);  // Adjusted for pre-2000
+var months = ee.List.sequence(1, 12);
+
+var tempMonthly = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    return months.map(function(month) {
+      var filtered = tempCollection
+        .filter(ee.Filter.calendarRange(year, year, 'year'))
+        .filter(ee.Filter.calendarRange(month, month, 'month'));
+      
+      // Calculate monthly mean
+      var monthlyMean = ee.Image(filtered.mean())
+        .set('system:time_start', ee.Date.fromYMD(year, month, 1))
+        .set('year', year)
+        .set('month', month);
+        
+      return monthlyMean;
+    });
+  }).flatten()
+);
+
+// Print collection size for verification
+print('Number of monthly images:', tempMonthly.size());
+
+// Create and configure the time series chart for average temperature
+var tempChart = ui.Chart.image.series({
+  imageCollection: tempMonthly,
+  region: point,
+  reducer: ee.Reducer.mean(),
+  scale: 250,  // ERA5 resolution is coarser than MODIS
+  xProperty: 'system:time_start'
+})
+.setChartType('ScatterChart')
+.setOptions({
+  title: 'Monthly Average Temperature ',
+  hAxis: {
+    title: 'Date',
+    format: 'yyyy-MM',
+    gridlines: {count: 10}
+  },
+  vAxis: {
+    title: 'Temperature (°C)',
+    gridlines: {count: 5}
+  },
+  trendlines: { 
+    0: {
+      type: 'linear',
+      color: 'green',
+      lineWidth: 1,
+      opacity: 0.5,
+      showR2: true
+    }
+  },
+  lineWidth: 1,
+  pointSize: 3,
+  series: {
+    0: {
+      color: 'green',
+      pointsVisible: true,
+      labelInLegend: 'Average Temperature'
+    }
+  }
+});
+
+// Display the chart
+print(tempChart);
+
+// Calculate and display statistics for average temperature
+var avgStats = tempMonthly.reduceColumns({
+  reducer: ee.Reducer.mean()
+    .combine({
+      reducer2: ee.Reducer.stdDev(),
+      outputPrefix: 'stdDev_',
+      sharedInputs: true
+    })
+    .combine({
+      reducer2: ee.Reducer.minMax(),
+      outputPrefix: 'range_',
+      sharedInputs: true
+    }),
+  selectors: ['AVG_Temp']
+});
+
+print('Average Temperature Statistics (°C):', avgStats);
+
+
+
+
