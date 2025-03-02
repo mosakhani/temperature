@@ -1,0 +1,104 @@
+// Define the point of interest
+var point = ee.Geometry.Point([50, 36]);
+
+// Load ERA5 data for total precipitation
+var dataset = ee.ImageCollection("ECMWF/ERA5/DAILY")
+  .filterBounds(point)
+  .filterDate('1979-09-23', '1980-09-23')  
+  .select(['total_precipitation']);
+
+// Function to convert precipitation from meters to millimeters
+var metersToMillimeters = function(image) {
+  var precipitation = image.select('total_precipitation').multiply(1000) // Convert to mm
+    .rename('Total_Precipitation');
+  return precipitation.copyProperties(image, ['system:time_start']);
+};
+
+// Apply precipitation conversion
+var precipCollection = dataset.map(metersToMillimeters);
+
+// Calculate monthly totals for specified years
+var years = ee.List.sequence(1970, 2019);
+var months = ee.List.sequence(1, 12);
+
+var precipMonthly = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    return months.map(function(month) {
+      var filtered = precipCollection
+        .filter(ee.Filter.calendarRange(year, year, 'year'))
+        .filter(ee.Filter.calendarRange(month, month, 'month'));
+      
+      // Calculate monthly total precipitation
+      var monthlyTotal = ee.Image(filtered.sum()) // Use sum for total precipitation
+        .set('system:time_start', ee.Date.fromYMD(year, month, 1))
+        .set('year', year)
+        .set('month', month);
+        
+      return monthlyTotal;
+    });
+  }).flatten()
+);
+
+// Print collection size for verification
+print('Number of monthly images:', precipMonthly.size());
+
+// Create and configure the time series chart for precipitation
+var precipChart = ui.Chart.image.series({
+  imageCollection: precipMonthly,
+  region: point,
+  reducer: ee.Reducer.mean(),
+  scale: 250,  // ERA5 resolution
+  xProperty: 'system:time_start'
+})
+.setChartType('ScatterChart')
+.setOptions({
+  title: 'Monthly Total Precipitation',
+  hAxis: {
+    title: 'Date',
+    format: 'yyyy-MM',
+    gridlines: {count: 10}
+  },
+  vAxis: {
+    title: 'Precipitation (mm)',
+    gridlines: {count: 5}
+  },
+  trendlines: { 
+    0: {
+      type: 'linear',
+      color: 'blue',
+      lineWidth: 1,
+      opacity: 0.5,
+      showR2: true
+    }
+  },
+  lineWidth: 1,
+  pointSize: 3,
+  series: {
+    0: {
+      color: 'blue',
+      pointsVisible: true,
+      labelInLegend: 'Total Precipitation'
+    }
+  }
+});
+
+// Display the chart
+print(precipChart);
+
+// Calculate and display statistics for precipitation
+var precipStats = precipMonthly.reduceColumns({
+  reducer: ee.Reducer.mean()
+    .combine({
+      reducer2: ee.Reducer.stdDev(),
+      outputPrefix: 'stdDev_',
+      sharedInputs: true
+    })
+    .combine({
+      reducer2: ee.Reducer.minMax(),
+      outputPrefix: 'range_',
+      sharedInputs: true
+    }),
+  selectors: ['Total_Precipitation']
+});
+
+print('Precipitation Statistics (mm):', precipStats);
